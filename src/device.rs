@@ -1,4 +1,4 @@
-use std::{cell::RefCell, mem::swap};
+use std::mem::swap;
 
 use pyo3::{prelude::*, types::PyBytes};
 use smoltcp::{
@@ -10,59 +10,66 @@ use smoltcp::{
 pub struct VirtualNIC {
     #[pyo3(get)]
     mtu: u32,
-    received_buffer: Vec<u8>,
-    consumer: PyObject,
+    rx_buffer: Vec<u8>,
+    tx_buffer: Vec<u8>,
 }
 
 #[pymethods]
 impl VirtualNIC {
     #[new]
-    fn __new__(mtu: u32, consumer: PyObject) -> Self {
+    fn __new__(mtu: u32) -> Self {
         VirtualNIC {
             mtu,
-            received_buffer: Vec::with_capacity(mtu.try_into().unwrap()),
-            consumer,
+            rx_buffer: Vec::with_capacity(mtu.try_into().unwrap()),
+            tx_buffer: Vec::with_capacity(mtu.try_into().unwrap()),
         }
     }
 
-    fn data_received(&mut self, data: &Bound<'_, PyBytes>) {
-        self.received_buffer.extend_from_slice(data.as_bytes());
+    fn extend_rx_buffer(&mut self, data: &Bound<PyBytes>) {
+        self.rx_buffer.extend_from_slice(data.as_bytes());
+    }
+
+    fn can_consume_tx_buffer(&self) -> bool {
+        !self.tx_buffer.is_empty()
+    }
+
+    fn consume_tx_buffer(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        PyBytes::new_with(py, self.tx_buffer.len(), |buffer: &mut [u8]| {
+            py.allow_threads(|| {
+                buffer.copy_from_slice(&self.tx_buffer);
+                self.tx_buffer.clear();
+            });
+            Ok(())
+        })
+        .map(|bytes| bytes.unbind())
     }
 }
 
-pub struct RxToken {
-    buffer: Vec<u8>,
-}
+pub struct RxToken(Vec<u8>);
 
 impl phy::RxToken for RxToken {
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&[u8]) -> R,
     {
-        f(&self.buffer[..])
+        f(&self.0[..])
     }
 }
 
-pub struct TxToken {
-    consumer: PyObject,
-}
+pub struct TxToken(Py<VirtualNIC>);
 
 impl phy::TxToken for TxToken {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        // unable to raise exception here, so just unwrap
+        let mut buffer = vec![0; len];
+        let result = f(&mut buffer);
         Python::with_gil(|py| {
-            let result: RefCell<Option<R>> = RefCell::new(None);
-            let bytes = PyBytes::new_with(py, len, |buffer: &mut [u8]| {
-                result.replace(Some(f(buffer)));
-                Ok(())
-            })
-            .unwrap();
-            self.consumer.call1(py, (bytes,)).unwrap();
-            result.take().unwrap()
-        })
+            let nic = &mut *self.0.bind(py).borrow_mut();
+            nic.tx_buffer.extend(buffer);
+        });
+        result
     }
 }
 
@@ -81,17 +88,12 @@ impl Device for VirtualNICWrapper {
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         Python::with_gil(|py| {
             let device = &mut *self.0.bind(py).borrow_mut();
-            if device.received_buffer.len() > 0 {
-                let mut data = Vec::with_capacity(device.mtu.try_into().unwrap());
+            if device.rx_buffer.len() > 0 {
+                let mut buffer = Vec::with_capacity(device.mtu.try_into().unwrap());
                 py.allow_threads(|| {
-                    swap(&mut device.received_buffer, &mut data);
+                    swap(&mut device.rx_buffer, &mut buffer);
                 });
-                Some((
-                    RxToken { buffer: data },
-                    TxToken {
-                        consumer: Py::clone_ref(&device.consumer, py),
-                    },
-                ))
+                Some((RxToken(buffer), TxToken(self.0.clone_ref(py))))
             } else {
                 None
             }
@@ -99,14 +101,7 @@ impl Device for VirtualNICWrapper {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        Python::with_gil(|py| {
-            Some(TxToken {
-                consumer: {
-                    let device = &mut *self.0.bind(py).borrow_mut();
-                    Py::clone_ref(&device.consumer, py)
-                },
-            })
-        })
+        Python::with_gil(|py| Some(TxToken(self.0.clone_ref(py))))
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
