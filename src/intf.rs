@@ -27,11 +27,27 @@ impl TcpSocket {
         })
     }
 
+    fn may_send(&self) -> bool {
+        Python::with_gil(|py| {
+            let intf = &*self.intf.borrow(py);
+            let socket = intf.sockets.get::<Socket>(self.handle);
+            socket.may_send()
+        })
+    }
+
     fn can_recv(&self) -> bool {
         Python::with_gil(|py| {
             let intf = &*self.intf.borrow(py);
             let socket = intf.sockets.get::<Socket>(self.handle);
             socket.can_recv()
+        })
+    }
+
+    fn may_recv(&self) -> bool {
+        Python::with_gil(|py| {
+            let intf = &*self.intf.borrow(py);
+            let socket = intf.sockets.get::<Socket>(self.handle);
+            socket.may_recv()
         })
     }
 
@@ -66,6 +82,14 @@ impl TcpSocket {
                 })
             })
             .map(|obj| obj.unbind())
+        })
+    }
+
+    fn close(&mut self) {
+        Python::with_gil(|py| {
+            let intf = &mut *self.intf.borrow_mut(py);
+            let socket = intf.sockets.get_mut::<Socket>(self.handle);
+            socket.close();
         })
     }
 }
