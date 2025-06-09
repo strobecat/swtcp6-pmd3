@@ -3,7 +3,7 @@ use pyo3::{create_exception, exceptions::PyException, prelude::*, types::PyBytes
 use rand::random;
 use smoltcp::{
     iface::{Config, Interface as SmoltcpInterface, SocketHandle, SocketSet},
-    socket::tcp::{Socket, SocketBuffer},
+    socket::tcp::{Socket, SocketBuffer, State},
     time::Instant,
     wire::{HardwareAddress, Ipv6Address, Ipv6Cidr},
 };
@@ -12,11 +12,46 @@ use std::str::FromStr;
 create_exception!(swtcp6_pmd3, SendError, PyException);
 create_exception!(swtcp6_pmd3, RecvError, PyException);
 
-#[pyclass]
+#[pyclass(eq, module = "swtcp6_pmd3")]
+#[derive(PartialEq)]
+#[allow(non_camel_case_types)]
+pub enum TcpState {
+    CLOSED,
+    LISTEN,
+    SYN_SENT,
+    SYN_RECEIVED,
+    ESTABLISHED,
+    FIN_WAIT_1,
+    FIN_WAIT_2,
+    CLOSE_WAIT,
+    CLOSING,
+    LAST_ACK,
+    TIME_WAIT,
+}
+impl From<State> for TcpState {
+    fn from(value: State) -> Self {
+        match value {
+            State::Closed => TcpState::CLOSED,
+            State::Listen => TcpState::LISTEN,
+            State::SynSent => TcpState::SYN_SENT,
+            State::SynReceived => TcpState::SYN_RECEIVED,
+            State::Established => TcpState::ESTABLISHED,
+            State::FinWait1 => TcpState::FIN_WAIT_1,
+            State::FinWait2 => TcpState::FIN_WAIT_2,
+            State::CloseWait => TcpState::CLOSE_WAIT,
+            State::Closing => TcpState::CLOSING,
+            State::LastAck => TcpState::LAST_ACK,
+            State::TimeWait => TcpState::TIME_WAIT,
+        }
+    }
+}
+
+#[pyclass(module = "swtcp6_pmd3")]
 pub struct TcpSocket {
     handle: SocketHandle,
     intf: Py<Interface>,
 }
+
 #[pymethods]
 impl TcpSocket {
     fn can_send(&self) -> bool {
@@ -48,6 +83,14 @@ impl TcpSocket {
             let intf = &*self.intf.borrow(py);
             let socket = intf.sockets.get::<Socket>(self.handle);
             socket.may_recv()
+        })
+    }
+
+    fn state(&self) -> TcpState {
+        Python::with_gil(|py| {
+            let intf = &*self.intf.borrow(py);
+            let socket = intf.sockets.get::<Socket>(self.handle);
+            socket.state().into()
         })
     }
 
@@ -92,12 +135,29 @@ impl TcpSocket {
             socket.close();
         })
     }
+
+    fn abort(&mut self) {
+        Python::with_gil(|py| {
+            let intf = &mut *self.intf.borrow_mut(py);
+            let socket = intf.sockets.get_mut::<Socket>(self.handle);
+            socket.abort();
+        })
+    }
+}
+
+impl Drop for TcpSocket {
+    fn drop(&mut self) {
+        Python::with_gil(|py| {
+            let intf = &mut *self.intf.borrow_mut(py);
+            py.allow_threads(|| intf.sockets.remove(self.handle));
+        });
+    }
 }
 
 create_exception!(swtcp6_pmd3, InvalidAddressError, PyException);
 create_exception!(swtcp6_pmd3, ConnectError, PyException);
 
-#[pyclass]
+#[pyclass(module = "swtcp6_pmd3")]
 pub struct Interface {
     intf: SmoltcpInterface,
     device: VirtualNICWrapper,
@@ -160,6 +220,7 @@ impl Interface {
             .map_err(|err| InvalidAddressError::new_err(err.to_string()))?;
         let handle = intf.sockets.add(sock);
         let socket = intf.sockets.get_mut::<Socket>(handle);
+
         socket
             .connect(
                 intf.intf.context(),

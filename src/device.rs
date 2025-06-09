@@ -6,7 +6,7 @@ use smoltcp::{
     time::Instant,
 };
 
-#[pyclass]
+#[pyclass(module = "swtcp6_pmd3")]
 pub struct VirtualNIC {
     #[pyo3(get)]
     mtu: u32,
