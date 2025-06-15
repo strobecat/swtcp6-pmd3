@@ -33,7 +33,7 @@ impl VirtualNIC {
         !self.tx_buffer.is_empty()
     }
 
-    fn consume_tx_buffer(&mut self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+    fn consume_tx_buffer<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         PyBytes::new_with(py, self.tx_buffer.len(), |buffer: &mut [u8]| {
             py.allow_threads(|| {
                 buffer.copy_from_slice(&self.tx_buffer);
@@ -41,7 +41,6 @@ impl VirtualNIC {
             });
             Ok(())
         })
-        .map(|bytes| bytes.unbind())
     }
 }
 
@@ -67,7 +66,7 @@ impl phy::TxToken for TxToken {
         let result = f(&mut buffer);
         Python::with_gil(|py| {
             let nic = &mut *self.0.bind(py).borrow_mut();
-            nic.tx_buffer.extend(buffer);
+            py.allow_threads(|| nic.tx_buffer.extend(buffer));
         });
         result
     }
