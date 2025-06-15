@@ -3,7 +3,7 @@ requires = ["maturin>=1.8,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "swtcp6_pmd3"
+name = "swtcp6-pmd3"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Rust",
