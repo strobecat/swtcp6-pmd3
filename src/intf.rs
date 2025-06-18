@@ -1,4 +1,5 @@
 use crate::device::{VirtualNIC, VirtualNICWrapper};
+use crate::socket::TcpSocket;
 use pyo3::{create_exception, exceptions::PyException, prelude::*};
 use rand::random;
 use smoltcp::{
@@ -8,10 +9,10 @@ use smoltcp::{
     wire::{HardwareAddress, Ipv6Address, Ipv6Cidr},
 };
 use std::str::FromStr;
-use crate::socket::TcpSocket;
 
 create_exception!(swtcp6_pmd3, InvalidAddressError, PyException);
 create_exception!(swtcp6_pmd3, ConnectError, PyException);
+create_exception!(swtcp6_pmd3, ListenError, PyException);
 
 #[pyclass(module = "swtcp6_pmd3")]
 pub struct Interface {
@@ -91,7 +92,27 @@ impl Interface {
             .map_err(|err| ConnectError::new_err(err.to_string()))?;
         Ok(TcpSocket {
             handle,
-            intf: slf.into()
+            intf: slf.into(),
+        })
+    }
+
+    fn listen(mut slf: PyRefMut<'_, Self>, port: u16) -> PyResult<TcpSocket> {
+        let sock = slf.py().allow_threads(|| {
+            Socket::new(
+                SocketBuffer::new(vec![0; 65535]),
+                SocketBuffer::new(vec![0; 65535]),
+            )
+        });
+
+        let intf = &mut *slf;
+        let handle = intf.sockets.add(sock);
+        let socket = intf.sockets.get_mut::<Socket>(handle);
+        socket
+            .listen(port)
+            .map_err(|err| ListenError::new_err(err.to_string()))?;
+        Ok(TcpSocket {
+            handle,
+            intf: slf.into(),
         })
     }
 

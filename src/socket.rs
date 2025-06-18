@@ -1,9 +1,10 @@
+use crate::intf::Interface;
 use pyo3::{create_exception, exceptions::PyException, prelude::*, types::PyBytes};
 use smoltcp::{
     iface::SocketHandle,
     socket::tcp::{Socket, State},
+    time::Duration,
 };
-use crate::intf::Interface;
 
 create_exception!(swtcp6_pmd3, SendError, PyException);
 create_exception!(swtcp6_pmd3, RecvError, PyException);
@@ -117,6 +118,20 @@ impl TcpSocket {
         let intf = &mut *self.intf.borrow_mut(py);
         let socket = intf.sockets.get_mut::<Socket>(self.handle);
         socket.abort();
+    }
+
+    #[getter]
+    fn get_keep_alive(&self, py: Python<'_>) -> Option<u64> {
+        let intf = &*self.intf.borrow_mut(py);
+        let socket = intf.sockets.get::<Socket>(self.handle);
+        socket.keep_alive().map(|duration| duration.secs())
+    }
+
+    #[setter]
+    fn set_keep_alive(&mut self, py: Python<'_>, secs: Option<u64>) {
+        let intf = &mut *self.intf.borrow_mut(py);
+        let socket = intf.sockets.get_mut::<Socket>(self.handle);
+        socket.set_keep_alive(secs.map(|secs| Duration::from_secs(secs)));
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {
